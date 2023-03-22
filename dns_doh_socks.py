@@ -30,15 +30,7 @@ def cache_updater():
 
         request_b64 = base64.b64encode(req.pack()).decode()
         response = None
-        try:
-            print("doh",DOH_URL)
-            response_data = requests.get(DOH_URL, params={'dns': request_b64}, timeout=10,proxies=proxies)
-            print(response_data,response_data.content)
-            response = DNSRecord.parse(response_data.content)
-            print(response)
-        except Exception as e:
-            print("E"*30,1,e)
-            pass
+
         if response == None:
             print('217.218.155.155')
             try:
@@ -79,6 +71,16 @@ def cache_updater():
             except Exception as e:
                 pass
                 print("E"*30,5, e)
+        if response == None:
+            try:
+                print("doh",DOH_URL)
+                response_data = requests.get(DOH_URL, params={'dns': request_b64}, timeout=10,proxies=proxies)
+                print(response_data,response_data.content)
+                response = DNSRecord.parse(response_data.content)
+                print(response)
+            except Exception as e:
+                print("E"*30,1,e)
+                pass
         if response == None:
             continue
         # print("D"*30,response)
