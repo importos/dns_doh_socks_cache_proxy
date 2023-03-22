@@ -11,11 +11,9 @@ from dnslib.server import RR
 import time
 
 # Define the DoH endpoint to use
-DOH_URL = 'https://cloudflare-dns.com/dns-query'
-socks_host = '192.168.15.77'
-socks_port = 1080
 proxies = {'http': "socks5://192.168.15.77:1080",'https':"socks5://192.168.15.77:1080"}
-
+CACHE_TIME = 60*60
+TEMP_CACHE_TIME = CACHE_TIME - 50
 dns_cache ={
     1:{
     "time.ir.":DNSRecord(),
@@ -23,71 +21,75 @@ dns_cache ={
     28:{},
 }
 cache_write_lock = threading.Lock()
-cache_request = queue.Queue()
+cache_request = queue.Queue(10000)
+class base_resolver():
+    def __init__(self,host) -> None:
+        self._host = host
+    def resolve(self,request_pack):
+        raise Exception("Impliment")
+    def __repr__(self) -> str:
+        return "%s by %s"%(str(self.__class__),self._host)
+    
+
+
+class doh_resolver(base_resolver):
+    def resolve(self,request_pack):
+        request_b64 = base64.b64encode(request_pack).decode()
+        response_data = requests.get(self._host, params={'dns': request_b64}, timeout=60,proxies=proxies)
+        response = DNSRecord.parse(response_data.content)
+        return response
+    
+
+
+class dns_resolver(base_resolver):
+    def resolve(self,request_pack):
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        client_socket.sendto(request_pack, (self._host, 53))
+        client_socket.settimeout(5)
+        response_data, _ = client_socket.recvfrom(8096)
+        r1 = DNSRecord.parse(response_data)
+        for record in r1.rr:
+            if str(record.rdata).startswith("10."):
+                raise Exception("Bad Dns %s"%(self._host))
+        else:
+            return r1
+RESOLVERS = [
+    # dns_resolver("194.36.174.161"), #asia tech
+    # dns_resolver("91.99.101.12"), #parsonline
+    # dns_resolver("5.202.100.101"), #pishgaman
+    dns_resolver("194.225.62.80"), #daneshgah tehran
+    # dns_resolver("217.218.155.155"),
+    dns_resolver("1.1.1.1"),
+    # dns_resolver("8.8.8.8"),
+    doh_resolver("https://cloudflare-dns.com/dns-query"),
+]
+def resolver(request):
+
+    response = None
+    request_pack = request.pack()
+    for resolver_object in RESOLVERS:
+        try:
+            response = resolver_object.resolve(request_pack)
+            if response != None:
+                return response
+        except Exception as e:
+            pass
+            print("E"*30,3, e,resolver_object,request)     
 def cache_updater():
     while True:
         req = cache_request.get()
-
-        request_b64 = base64.b64encode(req.pack()).decode()
-        response = None
-
-        if response == None:
-            print('217.218.155.155')
-            try:
-                client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                client_socket.sendto(req.pack(), ('217.218.155.155', 53))
-                client_socket.settimeout(10)
-                response_data, _ = client_socket.recvfrom(8096)
-                r1 = DNSRecord.parse(response_data)
-                for record in r1.rr:
-                    try:
-                        print("NNNNN",req.q.qname,record,str(record.rdata))
-                        if str(record.rdata).startswith("10."):
-                            break
-                    except Exception as e :
-                        print("E"*30,2, e)
-                else:
-                    response=r1
-            except Exception as e:
-                pass
-                print("E"*30,3, e)
-        if response == None:
-            print('1.1.1.1')
-            try:
-                client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                client_socket.sendto(req.pack(), ('1.1.1.1', 53))
-                client_socket.settimeout(10)
-                response_data, _ = client_socket.recvfrom(8096)
-                r1 = DNSRecord.parse(response_data)
-                for record in r1.rr:
-                    try:
-                        print("NNNNN",req.q.qname,record,str(record.rdata))
-                        if str(record.rdata).startswith("10."):
-                            break
-                    except Exception as e :
-                        print("E"*30,4, e)
-                else:
-                    response = r1
-            except Exception as e:
-                pass
-                print("E"*30,5, e)
-        if response == None:
-            try:
-                print("doh",DOH_URL)
-                response_data = requests.get(DOH_URL, params={'dns': request_b64}, timeout=10,proxies=proxies)
-                print(response_data,response_data.content)
-                response = DNSRecord.parse(response_data.content)
-                print(response)
-            except Exception as e:
-                print("E"*30,1,e)
-                pass
-        if response == None:
+        try:
+            response = resolver(req)
+            print("resolver " , response)
+            if response == None:
+                continue
+            with cache_write_lock:
+                dns_cache[req.q.qtype][req.q.qname]['reply']=response
+                dns_cache[req.q.qtype][req.q.qname]['time']=time.time()
+        except Exception as e:
+            print("TTTTTTTTTT",e)
+            response = None
             continue
-        # print("D"*30,response)
-        # print("D"*30,response.rr)
-        with cache_write_lock:
-            dns_cache[req.q.qtype][req.q.qname]['reply']=response
-            dns_cache[req.q.qtype][req.q.qname]['time']=time.time()
 
 def get_from_cache(request):
     # print(request)
@@ -99,14 +101,21 @@ def get_from_cache(request):
     # print(QTYPE[request.q.qtype])
     # print(dir(request))
     if request.q.qtype not in dns_cache:
-        dns_cache[request.q.qtype]={}
+        with cache_write_lock:
+            dns_cache[request.q.qtype]={}
     if request.q.qname not in dns_cache[request.q.qtype]:
-        dns_cache[request.q.qtype][request.q.qname]={"reply":request.reply(),"time":0}
+        with cache_write_lock:
+            dns_cache[request.q.qtype][request.q.qname]={"reply":request.reply(),"time":0}
     cc = dns_cache[request.q.qtype][request.q.qname]
-    print(request.q.qname,QTYPE[request.q.qtype],time.time()- cc['time'])
-    if (time.time()- cc['time'])>60:
-        cache_request.put(request)
-        time.sleep(2)
+    print(request.q.qname,QTYPE[request.q.qtype],CACHE_TIME-(time.time()- cc['time']))
+    if (time.time()- cc['time'])> CACHE_TIME:
+        try:
+            cache_request.put(request,timeout=1)
+            with cache_write_lock:
+                dns_cache[request.q.qtype][request.q.qname]['time']=time.time()-TEMP_CACHE_TIME
+        except:
+            pass
+        # time.sleep(2)
         cc = dns_cache[request.q.qtype][request.q.qname]
     resp=cc['reply']
     # print("*"*30)
@@ -141,10 +150,9 @@ def proxy_dns(data, server_socket, client_address):
     return response_data
 
 def main():
-    threading.Thread(target=cache_updater,daemon=True).start()
-    threading.Thread(target=cache_updater,daemon=True).start()
-    threading.Thread(target=cache_updater,daemon=True).start()
-    threading.Thread(target=cache_updater,daemon=True).start()
+    for i in range(30):
+        threading.Thread(target=cache_updater,daemon=True).start()
+
     # Create a UDP socket to listen for DNS requests
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_socket.bind(('0.0.0.0', 53))
