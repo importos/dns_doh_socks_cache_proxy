@@ -7,6 +7,9 @@ import threading
 import queue
 from dnslib import QTYPE
 from dnslib.server import RR
+import logging
+
+logging.basicConfig(level=logging.DEBUG,filename="/var/log/dns.log",)
 
 import time
 
@@ -57,10 +60,11 @@ RESOLVERS = [
     # dns_resolver("194.36.174.161"), #asia tech
     # dns_resolver("91.99.101.12"), #parsonline
     # dns_resolver("5.202.100.101"), #pishgaman
+    dns_resolver("5.200.200.200"), # itc
+    dns_resolver("1.1.1.1"), 
+    dns_resolver("217.218.155.155"), #itc
+    dns_resolver("8.8.8.8"),
     dns_resolver("194.225.62.80"), #daneshgah tehran
-    # dns_resolver("217.218.155.155"),
-    dns_resolver("1.1.1.1"),
-    # dns_resolver("8.8.8.8"),
     doh_resolver("https://cloudflare-dns.com/dns-query"),
 ]
 def resolver(request):
@@ -68,26 +72,32 @@ def resolver(request):
     response = None
     request_pack = request.pack()
     for resolver_object in RESOLVERS:
+        t1= time.time()
         try:
             response = resolver_object.resolve(request_pack)
             if response != None:
                 return response
         except Exception as e:
             pass
-            print("E"*30,3, e,resolver_object,request)     
+            logging.exception(" %s %s",resolver_object,request)     
+        logging.debug("="*30+" %s %s",time.time()-t1,resolver_object)
 def cache_updater():
     while True:
         req = cache_request.get()
         try:
             response = resolver(req)
-            print("resolver " , response)
+            logging.debug("resolver %s" , response)
             if response == None:
+                try:
+                    cache_request.put(req,timeout=1)
+                except:
+                    logging.exception("put timeout")
                 continue
             with cache_write_lock:
                 dns_cache[req.q.qtype][req.q.qname]['reply']=response
                 dns_cache[req.q.qtype][req.q.qname]['time']=time.time()
         except Exception as e:
-            print("TTTTTTTTTT",e)
+            logging.exception("")
             response = None
             continue
 
@@ -104,10 +114,17 @@ def get_from_cache(request):
         with cache_write_lock:
             dns_cache[request.q.qtype]={}
     if request.q.qname not in dns_cache[request.q.qtype]:
+        try:
+            request_pack = request.pack()
+            responce = RESOLVERS[0].resolve(request_pack)
+            if responce == None :
+                responce = request.reply()
+        except:
+            responce = request.reply()
         with cache_write_lock:
-            dns_cache[request.q.qtype][request.q.qname]={"reply":request.reply(),"time":0}
+            dns_cache[request.q.qtype][request.q.qname]={"reply":responce,"time":0}
     cc = dns_cache[request.q.qtype][request.q.qname]
-    print(request.q.qname,QTYPE[request.q.qtype],CACHE_TIME-(time.time()- cc['time']))
+    logging.debug("%s %s %s",request.q.qname,QTYPE[request.q.qtype],CACHE_TIME-(time.time()- cc['time']))
     if (time.time()- cc['time'])> CACHE_TIME:
         try:
             cache_request.put(request,timeout=1)
