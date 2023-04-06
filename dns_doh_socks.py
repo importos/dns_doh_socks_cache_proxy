@@ -7,15 +7,30 @@ import threading
 import queue
 from dnslib import QTYPE
 from dnslib.server import RR
+import time
 import logging
+from logging.handlers import RotatingFileHandler
 
-logging.basicConfig(level=logging.DEBUG,filename="/var/log/dns.log",)
+# Create a rotating file handler that rotates the log file every 1 MB
+handler = RotatingFileHandler(filename='/var/log/dns.log', maxBytes=1000000, backupCount=10)
+
+# Configure the format of the log message
+formatter = logging.Formatter('%(asctime)s %(levelname)s [%(process)d:%(thread)d] %(filename)s:%(lineno)d - %(message)s')
+handler.setFormatter(formatter)
+
+# Set the logging level
+handler.setLevel(logging.INFO)
+
+# Create a logger and add the handler to it
+logger = logging.getLogger('dns')
+logger.addHandler(handler)
+
 
 import time
 
 # Define the DoH endpoint to use
 proxies = {'http': "socks5://192.168.15.77:1080",'https':"socks5://192.168.15.77:1080"}
-CACHE_TIME = 60*60
+CACHE_TIME = 60*5
 TEMP_CACHE_TIME = CACHE_TIME - 50
 dns_cache ={
     1:{
@@ -186,9 +201,13 @@ def main():
     # return 
     while True:
         # Receive a DNS request from a client
-        data, client_address = server_socket.recvfrom(4096)
+        try:
+            data, client_address = server_socket.recvfrom(4096)
 
-        threading.Thread(target=proxy_dns,args=(data, server_socket, client_address)).start()
+            threading.Thread(target=proxy_dns,args=(data, server_socket, client_address)).start()
+        except:
+            logging.exception("main loop")
+            time.sleep(1)
         
         # Parse the DNS request using dnspython
         
