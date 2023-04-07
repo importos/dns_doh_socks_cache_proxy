@@ -22,7 +22,7 @@ handler.setFormatter(formatter)
 handler.setLevel(logging.INFO)
 
 # Create a logger and add the handler to it
-logger = logging.getLogger('dns')
+logger = logging.getLogger('')
 logger.addHandler(handler)
 
 
@@ -54,6 +54,7 @@ class doh_resolver(base_resolver):
     def resolve(self,request_pack):
         request_b64 = base64.b64encode(request_pack).decode()
         response_data = requests.get(self._host, params={'dns': request_b64}, timeout=60,proxies=proxies)
+        logging.debug("DOH Responce %s"%str([response_data]))
         response = DNSRecord.parse(response_data.content)
         return response
     
@@ -68,7 +69,7 @@ class dns_resolver(base_resolver):
         r1 = DNSRecord.parse(response_data)
         for record in r1.rr:
             if str(record.rdata).startswith("10."):
-                raise Exception("Bad Dns %s"%(self._host))
+                raise Exception("Bad Dns %s %s"%(self._host,record.rdata))
         else:
             return r1
 RESOLVERS = [
@@ -98,13 +99,14 @@ def resolver(request):
         logging.debug("="*30+" %s %s",time.time()-t1,resolver_object)
 def cache_updater():
     while True:
-        req = cache_request.get()
+        req,ttl = cache_request.get()
         try:
             response = resolver(req)
             logging.debug("resolver %s" , response)
             if response == None:
                 try:
-                    cache_request.put(req,timeout=1)
+                    if ttl>0:
+                        cache_request.put((req,ttl-1),timeout=1)
                 except:
                     logging.exception("put timeout")
                 continue
@@ -142,7 +144,7 @@ def get_from_cache(request):
     logging.debug("%s %s %s",request.q.qname,QTYPE[request.q.qtype],CACHE_TIME-(time.time()- cc['time']))
     if (time.time()- cc['time'])> CACHE_TIME:
         try:
-            cache_request.put(request,timeout=1)
+            cache_request.put((request,15),timeout=1)
             with cache_write_lock:
                 dns_cache[request.q.qtype][request.q.qname]['time']=time.time()-TEMP_CACHE_TIME
         except:
